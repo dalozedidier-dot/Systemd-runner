@@ -121,3 +121,19 @@ On Windows (PowerShell), use `Get-FileHash` and compare manually or via a script
 
 - Sector-specific adapter implementations beyond the minimal layout.
 - Any interpretation of results. This repository is descriptive and contract-driven.
+
+
+## 4) Integrity / Principe S (FILE_INDEX_SHA256)
+
+Vérification déterministe (stdlib-only) :
+
+```bash
+python 00_core/scripts/verify_file_index.py --root . --index FILE_INDEX_SHA256.txt
+```
+
+Restauration depuis les zips sources (si le tree Git est incomplet) :
+
+```bash
+python 00_core/scripts/restore_from_original_zips.py --root .
+python 00_core/scripts/verify_file_index.py --root .
+```

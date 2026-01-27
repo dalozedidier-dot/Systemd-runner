@@ -8,20 +8,6 @@ from __future__ import annotations
 import argparse, csv, hashlib, json, math, os, re, statistics, unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-
-
-def _resolve_rel_path(primary_root: Path, rel: str, fallback_root: Path | None = None) -> Path:
-    """Resolve a repo-relative path with a fallback root.
-    Strategy: try primary_root/rel; if missing and fallback_root provided, try fallback_root/rel.
-    Returns absolute Path (may not exist).
-    """
-    p1 = (primary_root / rel).resolve()
-    if p1.exists():
-        return p1
-    if fallback_root is not None:
-        return (fallback_root / rel).resolve()
-    return p1
-
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -223,7 +209,7 @@ def adapter_generic_json(json_path: Path) -> Dict[str,int]:
 # Harness execution
 # ---------------------------
 
-def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool = False, suite_root: Path | None = None) -> Dict[str,Any]:
+def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool) -> Dict[str,Any]:
     mode = profile["mode"]
     if mode != "STRUCT_N":
         raise ValueError(f"Unsupported mode in this harness: {mode}")
@@ -237,7 +223,7 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool = Fa
         min_n_for_MAD=int(profile.get("min_n_for_MAD", 2)),
     )
 
-    fixture_path = _resolve_rel_path(repo_root, profile["fixture"], suite_root)
+    fixture_path = repo_root / profile["fixture"]
     strict = bool(profile.get("strict_parsing", False))
     max_unassigned_ratio = float(profile.get("max_unassigned_ratio", 0.1))
 
@@ -302,7 +288,7 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool = Fa
 
     expected_rel = profile.get("expected")
     if expected_rel:
-        expected_path = _resolve_rel_path(repo_root, expected_rel, suite_root)
+        expected_path = repo_root / expected_rel
         hash_path = expected_path.with_suffix(".sha256.txt")
 
         if update_expected:
@@ -322,54 +308,32 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool = Fa
     return report
 
 
-
 def main():
-    ap = argparse.ArgumentParser(description="SystemD Multisector Test Harness")
-    ap.add_argument("--repo-root", default=".", help="Repo root (Git repo).")
-    ap.add_argument("--profiles", default="tests/profiles", help="Directory with profile YAMLs (relative to --repo-root, or absolute).")
-    ap.add_argument("--update-expected", action="store_true", help="Write expected snapshots + sha256 sidecar.")
-    ap.add_argument("--out", default="tests/results.json", help="Aggregated results JSON (relative to --repo-root).")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo-root", default=".", help="Repo root containing tests/")
+    ap.add_argument("--profiles", default="tests/profiles", help="Directory with profile YAMLs")
+    ap.add_argument("--update-expected", action="store_true", help="Write expected snapshots")
+    ap.add_argument("--out", default="tests/results.json", help="Aggregated results JSON")
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
-    profiles_dir = (repo_root / args.profiles).resolve() if not Path(args.profiles).is_absolute() else Path(args.profiles).resolve()
-
-    if not profiles_dir.exists():
-        print(f"ERREUR: profiles_dir introuvable: {profiles_dir}")
-        return 2
-
-    # Heuristic: if profiles_dir ends with tests/profiles, suite_root = parent(parent) (01_tests_multisector)
-    suite_root = None
-    if len(profiles_dir.parts) >= 2 and [p.lower() for p in profiles_dir.parts[-2:]] == ["tests", "profiles"]:
-        suite_root = profiles_dir.parent.parent.resolve()
+    profiles_dir = (repo_root / args.profiles).resolve()
 
     results: List[Dict[str,Any]] = []
-    for yaml_file in sorted(profiles_dir.glob("*.yaml")):
-        try:
-            profile = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
-            report = run_case(profile, repo_root, update_expected=args.update_expected, suite_root=suite_root)
-            results.append(report)
-            status = report.get("expected_status", "NO_EXPECTED")
-            ddr = report.get("ddr", {}).get("ddr", "NA")
-            e = report.get("ddr", {}).get("e", "NA")
-            print(f"{yaml_file.name}: {status} | DDR: {ddr} | E: {e}")
-        except Exception as ex:
-            print(f"ERREUR sur {yaml_file.name}: {ex}")
+    for p in sorted(profiles_dir.glob("*.yaml")):
+        profile = yaml.safe_load(p.read_text(encoding="utf-8"))
+        results.append(run_case(profile, repo_root, update_expected=args.update_expected))
 
-    if not results:
-        print("Aucun profile traité (0 résultats).")
-        return 1
-
-    out_base = repo_root
-    if suite_root is not None and (args.out == "tests/results.json" or args.out.startswith("tests/")):
-        out_base = suite_root
-    out_path = (out_base / args.out).resolve() if not Path(args.out).is_absolute() else Path(args.out).resolve()
+    out_path = repo_root / args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    print(f"Résultats agrégés → {out_path}")
+    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return 0
-
+    # human summary
+    summary = {}
+    for r in results:
+        sid = r["meta"]["profile_id"]
+        summary[sid] = r.get("expected_status","OK")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

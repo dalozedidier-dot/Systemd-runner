@@ -14,3 +14,12 @@ Notes:
 - Core runner is stdlib-only (no external dependencies).
 - Test harness requires PyYAML (see requirements.txt).
 
+
+
+## References — Tryptique strict (DD / DD-R / E)
+
+Les documents du bundle "Tryptique_DD_DDR_E_strict_v2" sont inclus dans :
+
+- `00_core/docs/strict_triptique_v2/`
+
+Objectif : conserver une séparation stricte entre code (runner/harness) et références formelles (formules/clarifications) sans dépendances d’exécution.
