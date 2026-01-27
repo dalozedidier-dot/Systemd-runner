@@ -1,63 +1,86 @@
 #!/usr/bin/env python3
-# verify_file_index.py
-# Vérifie que chaque entrée de FILE_INDEX_SHA256.txt existe et que le SHA256 correspond.
-# Sortie non-compensable : OK / MISSING / MISMATCH.
+"""Verify FILE_INDEX_SHA256.txt integrity index (cross-platform).
+
+Expected line format (sha256sum compatible):
+    <sha256>  <relative/path>
+
+Notes:
+- Ignores empty lines and lines starting with '#'
+- Paths are treated as relative to --root (default: repository root)
+"""
+
 from __future__ import annotations
-import argparse, hashlib
+
+import argparse
+import hashlib
 from pathlib import Path
 
-def sha256_file(p: Path) -> str:
+
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
-    with p.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
+    with path.open("rb") as f:
+        while True:
+            b = f.read(chunk_size)
+            if not b:
+                break
+            h.update(b)
     return h.hexdigest()
+
+
+def parse_index_line(line: str) -> tuple[str, str] | None:
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    # Accept both "HASH  path" and "HASH *path" (sha256sum variants)
+    parts = line.split()
+    if len(parts) < 2:
+        return None
+    h = parts[0].strip()
+    rel = " ".join(parts[1:]).strip()
+    if rel.startswith("*"):
+        rel = rel[1:]
+    return h, rel
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".", help="repo root")
-    ap.add_argument("--index", default="FILE_INDEX_SHA256.txt", help="index file")
+    ap.add_argument("--root", default=".", help="Repository root used to resolve relative paths")
+    ap.add_argument("--index", default="FILE_INDEX_SHA256.txt", help="Integrity index file")
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
-    index_path = root / args.index
+    index_path = (root / args.index).resolve()
+
     if not index_path.exists():
-        print(f"INDEX_MISSING: {index_path}")
+        print(f"[ERR] index not found: {index_path}")
         return 2
 
-    missing, mismatch, ok = [], [], 0
-    for ln in index_path.read_text(encoding="utf-8").splitlines():
-        ln = ln.strip()
-        if not ln:
+    bad = 0
+    missing = 0
+    checked = 0
+
+    for raw in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        parsed = parse_index_line(raw)
+        if parsed is None:
             continue
-        try:
-            h, rel = ln.split(None, 1)
-            rel = rel.strip()
-        except ValueError:
-            print(f"INDEX_LINE_INVALID: {ln}")
-            return 2
-
-        p = root / rel
-        if not p.exists():
-            missing.append(rel)
+        expected_hash, rel = parsed
+        target = (root / rel).resolve()
+        checked += 1
+        if not target.exists():
+            missing += 1
+            print(f"[MISS] {rel}")
             continue
+        got = sha256_file(target)
+        if got.lower() != expected_hash.lower():
+            bad += 1
+            print(f"[BAD]  {rel}")
+            print(f"       expected={expected_hash}")
+            print(f"       got     ={got}")
 
-        real = sha256_file(p)
-        if real.lower() != h.lower():
-            mismatch.append((rel, h, real))
-        else:
-            ok += 1
+    ok = checked - bad - missing
+    print(f"[SUMMARY] checked={checked} ok={ok} bad={bad} missing={missing}")
+    return 0 if (bad == 0 and missing == 0) else 1
 
-    print(f"OK={ok}  MISSING={len(missing)}  MISMATCH={len(mismatch)}")
-    if missing:
-        print("\n[MISSING]")
-        for r in missing:
-            print(r)
-    if mismatch:
-        print("\n[MISMATCH]")
-        for r, exp, got in mismatch:
-            print(f"{r}\n  expected={exp}\n  got     ={got}")
-    return 0 if (not missing and not mismatch) else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())

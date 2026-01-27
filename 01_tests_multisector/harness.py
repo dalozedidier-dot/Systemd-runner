@@ -13,6 +13,27 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 # ---------------------------
+# Path resolution
+# ---------------------------
+def resolve_rel(repo_root: Path, rel: str) -> Path:
+    """Resolve a repo-relative path.
+    Compatibility rule:
+    - If rel starts with 'tests/', prefer '01_tests_multisector/tests/' under repo_root.
+    - Otherwise try repo_root/rel, then fallback to repo_root/'01_tests_multisector'/rel.
+    """
+    rel = rel.replace("\\", "/")
+    primary = (repo_root / rel)
+    if rel.startswith("tests/"):
+        alt = (repo_root / "01_tests_multisector" / rel)
+        if alt.exists():
+            return alt
+    if primary.exists():
+        return primary
+    alt2 = (repo_root / "01_tests_multisector" / rel)
+    return alt2 if alt2.exists() else primary
+
+
+# ---------------------------
 # Kernel (STRUCT_N): proxies 1..n
 # ---------------------------
 
@@ -221,7 +242,7 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool) -> 
         min_n_for_MAD=int(profile.get("min_n_for_MAD", 2)),
     )
 
-    fixture_path = repo_root / profile["fixture"]
+    fixture_path = resolve_rel(repo_root, profile["fixture"])
     strict = bool(profile.get("strict_parsing", False))
     max_unassigned_ratio = float(profile.get("max_unassigned_ratio", 0.1))
 
@@ -286,7 +307,7 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool) -> 
 
     expected_rel = profile.get("expected")
     if expected_rel:
-        expected_path = repo_root / expected_rel
+        expected_path = resolve_rel(repo_root, expected_rel)
         hash_path = expected_path.with_suffix(".sha256.txt")
 
         if update_expected:
@@ -308,20 +329,20 @@ def run_case(profile: Dict[str,Any], repo_root: Path, update_expected: bool) -> 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-root", default=".", help="Repo root containing tests/")
-    ap.add_argument("--profiles", default="tests/profiles", help="Directory with profile YAMLs")
+    ap.add_argument("--profiles", default="01_tests_multisector/tests/profiles", help="Directory with profile YAMLs")
     ap.add_argument("--update-expected", action="store_true", help="Write expected snapshots")
-    ap.add_argument("--out", default="tests/results.json", help="Aggregated results JSON")
+    ap.add_argument("--out", default="01_tests_multisector/tests/results.json", help="Aggregated results JSON")
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
-    profiles_dir = (repo_root / args.profiles).resolve()
+    profiles_dir = resolve_rel(repo_root, args.profiles).resolve()
 
     results: List[Dict[str,Any]] = []
     for p in sorted(profiles_dir.glob("*.yaml")):
         profile = yaml.safe_load(p.read_text(encoding="utf-8"))
         results.append(run_case(profile, repo_root, update_expected=args.update_expected))
 
-    out_path = repo_root / args.out
+    out_path = resolve_rel(repo_root, args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
