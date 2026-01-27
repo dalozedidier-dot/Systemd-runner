@@ -34,15 +34,14 @@ jobs:
           python -m pip install flake8
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
+      - name: Verify repo file index (frozen snapshot)
+        run: |
+          python 00_core/scripts/verify_file_index.py --root .
+
       - name: Run core runner self-tests
         run: |
           python 00_core/scripts/run_ddr.py --run-tests
 
-      - name: Verify repo file index
+      - name: Run multisector harness (write outside repo)
         run: |
-          python 00_core/scripts/verify_file_index.py --root .
-
-      - name: Run multisector harness (repo root)
-        run: |
-          python 01_tests_multisector/harness.py --repo-root .
-
+          python 01_tests_multisector/harness.py --repo-root . --out /tmp/systemd_results.json
