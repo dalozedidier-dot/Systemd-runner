@@ -344,14 +344,14 @@ def main():
 
     out_path = resolve_rel(repo_root, args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
     # human summary
     summary = {}
     for r in results:
         sid = r["meta"]["profile_id"]
         summary[sid] = r.get("expected_status","OK")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(json.dumps(dict(sorted(summary.items())), ensure_ascii=False, indent=2, sort_keys=True))
 
 if __name__ == "__main__":
     main()
