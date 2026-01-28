@@ -1,0 +1,210 @@
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.pytest_cache' /mnt/data/orig/systemd/Systemd-runner-main/.github/workflows/ci.yml /mnt/data/work/systemd/Systemd-runner-main/.github/workflows/ci.yml
+--- /mnt/data/orig/systemd/Systemd-runner-main/.github/workflows/ci.yml	2026-01-28 22:29:29.000000000 +0000
++++ /mnt/data/work/systemd/Systemd-runner-main/.github/workflows/ci.yml	2026-01-28 22:53:02.516558141 +0000
+@@ -20,107 +20,39 @@
+         with:
+           python-version: "3.11"
+ 
+-      - name: Install dependencies (best effort)
++      - name: Install dependencies (minimal)
+         shell: bash
+         run: |
+           set -euo pipefail
+           python -m pip install --upgrade pip
+-          # Si tu as un requirements.txt quelque part, on le prend, sinon on installe le minimum utile.
+-          if [ -f "requirements.txt" ]; then
+-            python -m pip install -r requirements.txt
+-          fi
+-          if [ -f "01_tests_multisector/requirements.txt" ]; then
+-            python -m pip install -r 01_tests_multisector/requirements.txt
+-          fi
++          # harness.py dépend de PyYAML
+           python -m pip install pyyaml
+ 
+-      - name: Debug layout
+-        shell: bash
+-        run: |
+-          set -euo pipefail
+-          echo "PWD=$(pwd)"
+-          ls -la
+-          echo "01_tests_multisector:"
+-          ls -la 01_tests_multisector || true
+-
+-      - name: Run harness smoke
++      - name: Run harness smoke (DDR + E)
+         shell: bash
+         run: |
+           set -euo pipefail
+           mkdir -p _ci_out
+ 
+-          cd 01_tests_multisector
+-
+-          # On logge l'aide du CLI (utile en artefact)
+-          python harness.py --help > ../_ci_out/harness_help.txt 2>&1 || true
++          # Aide CLI en artefact (utile pour diagnostiquer si l'interface bouge)
++          python 01_tests_multisector/harness.py --help > _ci_out/harness_help.txt 2>&1 || true
+ 
+-          # Auto-détection du dossier profils (le repo peut bouger, donc on cherche)
+-          PROFILES_DIR="$(python - <<'PY'
+-from pathlib import Path
+-import re
+-
+-root = Path(".").resolve()
+-
+-candidates = [
+-    root / "tests" / "profiles",
+-    root / "profiles",
+-    root / ".." / "_00_core" / "examples" / "profiles",
+-    root / ".." / "00_core" / "examples" / "profiles",
+-]
+-
+-def has_yaml_profiles(d: Path) -> bool:
+-    if not d.is_dir():
+-        return False
+-    ys = list(d.glob("*.yml")) + list(d.glob("*.yaml"))
+-    if not ys:
+-        return False
+-    # Heuristique: on veut des fichiers qui ressemblent à des profils
+-    for p in ys[:20]:
+-        txt = p.read_text(errors="ignore")
+-        if "profile" in txt or "profile_id" in txt or "id:" in txt:
+-            return True
+-    return True
+-
+-for d in candidates:
+-    if has_yaml_profiles(d):
+-        print(d.as_posix())
+-        raise SystemExit(0)
+-
+-# Si pas trouvé dans les candidats, on cherche un dossier qui contient le plus de YAML
+-best_dir = None
+-best_count = 0
+-for d in root.rglob("*"):
+-    if not d.is_dir():
+-        continue
+-    ys = list(d.glob("*.yml")) + list(d.glob("*.yaml"))
+-    if len(ys) > best_count:
+-        # Vérif rapide qu'on n'est pas juste dans .github/workflows
+-        if ".github/workflows" in d.as_posix():
+-            continue
+-        best_dir = d
+-        best_count = len(ys)
+-
+-if best_dir is None or best_count == 0:
+-    print("")  # vide
+-else:
+-    print(best_dir.as_posix())
+-PY
+-)"
+-          echo "PROFILES_DIR=$PROFILES_DIR"
+-
+-          if [ -z "${PROFILES_DIR}" ]; then
+-            echo "ERROR: impossible de trouver un dossier de profils YAML."
+-            echo "Arborescence utile:"
+-            find . -maxdepth 4 -type d -print
+-            exit 2
+-          fi
+-
+-          # IMPORTANT: --out doit être un FICHIER, pas un dossier.
+-          python harness.py \
+-            --repo-root .. \
+-            --profiles "${PROFILES_DIR}" \
+-            --out ../_ci_out/harness_results.json \
+-            2>&1 | tee ../_ci_out/smoke.log
++          # IMPORTANT:
++          # - pas de --test-matrix (non supporté)
++          # - --profiles attend un DOSSIER
++          # - --out attend un FICHIER
++          python 01_tests_multisector/harness.py \
++            --repo-root . \
++            --profiles 01_tests_multisector/tests/profiles \
++            --out _ci_out/harness_results.json \
++            2>&1 | tee _ci_out/smoke.log
++
++          echo "\nFound reports (best effort):" | tee _ci_out/found_reports.txt
++          find . -maxdepth 8 -type f \( \
++            -name "ddr_report.json" -o \
++            -name "e_report.json" -o \
++            -name "extraction_report.json" \
++          \) -print | tee -a _ci_out/found_reports.txt || true
+ 
+       - name: Upload artifacts
+         if: always()
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.pytest_cache' /mnt/data/orig/systemd/Systemd-runner-main/.github/workflows/smoke.yml /mnt/data/work/systemd/Systemd-runner-main/.github/workflows/smoke.yml
+--- /mnt/data/orig/systemd/Systemd-runner-main/.github/workflows/smoke.yml	2026-01-28 22:29:29.000000000 +0000
++++ /mnt/data/work/systemd/Systemd-runner-main/.github/workflows/smoke.yml	2026-01-28 22:54:01.268512060 +0000
+@@ -2,8 +2,7 @@
+ 
+ on:
+   workflow_dispatch:
+-  push:
+-    branches: [ "main" ]
++  # NB: ci.yml couvre déjà push/PR. Celui-ci sert de debug manuel.
+ 
+ jobs:
+   smoke:
+@@ -47,54 +46,21 @@
+           rm -rf _ci_out
+           mkdir -p _ci_out
+ 
+-          # Cherche un fichier profiles (ton TEST_MATRIX.example.md)
+-          PROFILES=""
+-          if [ -f TEST_MATRIX.md ]; then
+-            PROFILES="TEST_MATRIX.md"
+-          else
+-            CAND=$(find . -maxdepth 4 -type f -iname "*test*matrix*.md" | head -n 1 || true)
+-            if [ -n "$CAND" ]; then
+-              PROFILES="$CAND"
+-            fi
+-          fi
+-
+-          if [ -n "$PROFILES" ]; then
+-            echo "Using profiles: $PROFILES"
+-          else
+-            echo "No profiles file found. Proceeding without --profiles."
+-          fi
+-
+-          OUT_JSON="_ci_out/harness_results.json"
+-
+-          # Lance l'entrypoint le plus probable
+-          if [ -f scripts/run_smoke.py ]; then
+-            python scripts/run_smoke.py 2>&1 | tee _ci_out/smoke.log
+-
+-          elif [ -f 01_tests_multisector/harness.py ]; then
+-            if [ -n "$PROFILES" ]; then
+-              python 01_tests_multisector/harness.py --repo-root . --profiles "$PROFILES" --out "$OUT_JSON" 2>&1 | tee _ci_out/smoke.log
+-            else
+-              python 01_tests_multisector/harness.py --repo-root . --out "$OUT_JSON" 2>&1 | tee _ci_out/smoke.log
+-            fi
+-
+-          elif [ -f harness.py ]; then
+-            if [ -n "$PROFILES" ]; then
+-              python harness.py --repo-root . --profiles "$PROFILES" --out "$OUT_JSON" 2>&1 | tee _ci_out/smoke.log
+-            else
+-              python harness.py --repo-root . --out "$OUT_JSON" 2>&1 | tee _ci_out/smoke.log
+-            fi
+-
+-          else
+-            echo "No smoke/harness entrypoint found." | tee _ci_out/smoke.log
+-            exit 2
+-          fi
++          # IMPORTANT:
++          # - --profiles attend un DOSSIER
++          # - --out attend un FICHIER
++          python 01_tests_multisector/harness.py \
++            --repo-root . \
++            --profiles 01_tests_multisector/tests/profiles \
++            --out _ci_out/harness_results.json \
++            2>&1 | tee _ci_out/smoke.log
+ 
+           echo "Found reports:"
+           find . -maxdepth 7 -type f \( -name "ddr_report.json" -o -name "e_report.json" -o -name "extraction_report.json" \) -print | tee _ci_out/found_reports.txt || true
+ 
+           # Si le harness écrit un JSON d'agrégation, on le garde
+-          if [ -f "$OUT_JSON" ]; then
+-            echo "Harness output JSON: $OUT_JSON"
++          if [ -f "_ci_out/harness_results.json" ]; then
++            echo "Harness output JSON: _ci_out/harness_results.json"
+           else
+             echo "No harness_results.json produced (not fatal if reports exist)."
+           fi
