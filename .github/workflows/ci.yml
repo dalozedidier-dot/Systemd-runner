@@ -42,16 +42,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Toujours créer _ci_out, même si on échoue ensuite
+          mkdir -p _ci_out
+
           OUT="_ci_out/ddr_smoke"
           mkdir -p "$OUT"
 
-          # run_ddr.py attend une test-matrix, pas un fichier md direct.
-          # Ajuste le chemin si ton fichier de matrix a un autre nom.
-          TEST_MATRIX="01_tests_multisector/tests/fixtures/test_matrix_minimal.json"
+          # run_ddr.py attend un TEST_MATRIX.md (pas un JSON)
+          TEST_MATRIX="00_core/examples/TEST_MATRIX.example.md"
 
           if [ ! -f "$TEST_MATRIX" ]; then
-            echo "ERROR: test matrix introuvable: $TEST_MATRIX"
-            echo "Mets a jour TEST_MATRIX vers un fichier existant."
+            echo "ERROR: TEST_MATRIX introuvable: $TEST_MATRIX"
+            echo "Cherche un fichier TEST_MATRIX*.md existant et mets à jour TEST_MATRIX."
+            echo "Exemples possibles:"
+            find . -maxdepth 4 -type f -iname "TEST_MATRIX*.md" || true
             exit 1
           fi
 
@@ -60,7 +64,6 @@ jobs:
             --out "$OUT" \
             --with-e
 
-          # Checks structurels minimaux
           if [ ! -f "$OUT/ddr_report.json" ]; then
             echo "ERROR: ddr_report.json manquant dans $OUT"
             ls -la "$OUT" || true
@@ -77,7 +80,7 @@ jobs:
           if not isinstance(data, dict) or not data:
               raise SystemExit("ddr_report.json invalide ou vide")
 
-          print("OK: ddr_report.json present et lisible")
+          print("OK: ddr_report.json présent et lisible")
           PY
 
       - name: Upload artifacts (always)
