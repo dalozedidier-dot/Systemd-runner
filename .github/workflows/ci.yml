@@ -29,19 +29,6 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Debug layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "ROOT:"
-          ls -la
-          echo ""
-          echo "Find harness.py:"
-          find . -maxdepth 6 -type f -name "harness.py" -print || true
-          echo ""
-          echo "Find fixtures (md/csv):"
-          find tests -maxdepth 6 -type f \( -name "*.md" -o -name "*.csv" \) -print || true
-
       - name: Run harness (aggregated)
         shell: bash
         env:
@@ -64,7 +51,6 @@ jobs:
           OUT_JSON="_ci_out/harness_results.json"
           python "$HARNESS" --repo-root . --out "$OUT_JSON" 2>&1 | tee -a _ci_out/smoke.log
           echo $? > _ci_out/exit_code.txt
-
           exit 0
 
       - name: Export classic reports (ddr_report.json + e_report.json)
@@ -88,18 +74,15 @@ jobs:
             raise SystemExit(0)
 
           first = data[0]
-
           ddr = first.get("ddr", {})
           extraction = first.get("extraction", {})
           meta = first.get("meta", {})
 
-          # ddr_report.json (style historique)
           (out_dir / "ddr_report.json").write_text(
             json.dumps(ddr, indent=2, ensure_ascii=False),
             encoding="utf-8"
           )
 
-          # e_report.json (style historique: E + listes)
           e_report = {
             "E": ddr.get("e", "INCONCLUSIF"),
             "ko": ddr.get("ko", []),
@@ -117,13 +100,11 @@ jobs:
             encoding="utf-8"
           )
 
-          # extraction_report.json (utile pour audit)
           (out_dir / "extraction_report.json").write_text(
             json.dumps(extraction, indent=2, ensure_ascii=False),
             encoding="utf-8"
           )
 
-          # mini résumé
           summary = {
             "picked_index": 0,
             "total_cases": len(data),
@@ -140,35 +121,6 @@ jobs:
             encoding="utf-8"
           )
           PY
-
-          echo "Produced:"
-          ls -la _ci_out | sed -n '1,200p'
-
-      - name: Write GitHub summary
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f _ci_out/smoke_summary.json ]; then
-            python - <<'PY'
-            import json, os
-            from pathlib import Path
-            s = json.loads(Path("_ci_out/smoke_summary.json").read_text(encoding="utf-8"))
-            lines = []
-            lines.append("# Systemd-runner smoke DDR + E")
-            lines.append("")
-            lines.append(f"Fixture: `{s.get('picked_fixture')}`")
-            lines.append(f"Profile: `{s.get('picked_profile')}`")
-            lines.append(f"DDR: `{s.get('DDR')}`")
-            lines.append(f"E: `{s.get('E')}`")
-            lines.append("")
-            lines.append(f"KO: `{', '.join(s.get('ko') or [])}`")
-            lines.append(f"NC: `{', '.join(s.get('nc') or [])}`")
-            lines.append(f"OK: `{', '.join(s.get('ok') or [])}`")
-            lines.append("")
-            Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines), encoding="utf-8")
-            PY
-          fi
 
       - name: Upload artifacts
         if: always()
