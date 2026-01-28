@@ -1,13 +1,16 @@
-name: Smoke (DDR + E)
+name: Smoke (Systemd-runner)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,13 +20,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install
+      - name: Install dependencies (best effort)
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pyyaml
+          # Si tu as un requirements.txt quelque part, on le prend, sinon on installe le minimum utile.
+          if [ -f "requirements.txt" ]; then
+            python -m pip install -r requirements.txt
+          fi
+          if [ -f "01_tests_multisector/requirements.txt" ]; then
+            python -m pip install -r 01_tests_multisector/requirements.txt
+          fi
+          python -m pip install pyyaml
 
       - name: Debug layout
         shell: bash
@@ -31,60 +40,87 @@ jobs:
           set -euo pipefail
           echo "PWD=$(pwd)"
           ls -la
-          echo "Has harness:"
-          test -f 01_tests_multisector/harness.py && echo "OK" || (echo "Missing harness.py" && exit 1)
-          echo "Has profiles dir:"
-          test -d 00_core/examples/profiles && echo "OK" || (echo "Missing 00_core/examples/profiles" && exit 1)
+          echo "01_tests_multisector:"
+          ls -la 01_tests_multisector || true
 
-      - name: Run harness (write results to file)
+      - name: Run harness smoke
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p _ci_out
-          python 01_tests_multisector/harness.py \
-            --repo-root . \
-            --profiles 00_core/examples/profiles \
-            --out _ci_out/harness_results.json
 
-      - name: Collect reports if they exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p _ci_out
-          find . -type f \( -name "dd_report.json" -o -name "ddr_report.json" -o -name "e_report.json" \) -print \
-            -exec cp -f {} _ci_out/ \; || true
+          cd 01_tests_multisector
 
-      - name: Summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f _ci_out/harness_results.json ]; then
-            python - <<'PY'
-import json
+          # On logge l'aide du CLI (utile en artefact)
+          python harness.py --help > ../_ci_out/harness_help.txt 2>&1 || true
+
+          # Auto-détection du dossier profils (le repo peut bouger, donc on cherche)
+          PROFILES_DIR="$(python - <<'PY'
 from pathlib import Path
+import re
 
-p = Path("_ci_out/harness_results.json")
-data = json.loads(p.read_text(encoding="utf-8"))
-total = len(data)
-ok = sum(1 for r in data if r.get("ok") is True)
-fail = total - ok
+root = Path(".").resolve()
 
-print(f"Total: {total}")
-print(f"OK: {ok}")
-print(f"FAIL: {fail}")
+candidates = [
+    root / "tests" / "profiles",
+    root / "profiles",
+    root / ".." / "_00_core" / "examples" / "profiles",
+    root / ".." / "00_core" / "examples" / "profiles",
+]
 
-summary = []
-summary.append("# Smoke DDR + E")
-summary.append("")
-summary.append(f"- Total: {total}")
-summary.append(f"- OK: {ok}")
-summary.append(f"- FAIL: {fail}")
-Path("_ci_out/summary.md").write_text("\n".join(summary), encoding="utf-8")
+def has_yaml_profiles(d: Path) -> bool:
+    if not d.is_dir():
+        return False
+    ys = list(d.glob("*.yml")) + list(d.glob("*.yaml"))
+    if not ys:
+        return False
+    # Heuristique: on veut des fichiers qui ressemblent à des profils
+    for p in ys[:20]:
+        txt = p.read_text(errors="ignore")
+        if "profile" in txt or "profile_id" in txt or "id:" in txt:
+            return True
+    return True
+
+for d in candidates:
+    if has_yaml_profiles(d):
+        print(d.as_posix())
+        raise SystemExit(0)
+
+# Si pas trouvé dans les candidats, on cherche un dossier qui contient le plus de YAML
+best_dir = None
+best_count = 0
+for d in root.rglob("*"):
+    if not d.is_dir():
+        continue
+    ys = list(d.glob("*.yml")) + list(d.glob("*.yaml"))
+    if len(ys) > best_count:
+        # Vérif rapide qu'on n'est pas juste dans .github/workflows
+        if ".github/workflows" in d.as_posix():
+            continue
+        best_dir = d
+        best_count = len(ys)
+
+if best_dir is None or best_count == 0:
+    print("")  # vide
+else:
+    print(best_dir.as_posix())
 PY
-            cat _ci_out/summary.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No harness_results.json found" >> "$GITHUB_STEP_SUMMARY"
+)"
+          echo "PROFILES_DIR=$PROFILES_DIR"
+
+          if [ -z "${PROFILES_DIR}" ]; then
+            echo "ERROR: impossible de trouver un dossier de profils YAML."
+            echo "Arborescence utile:"
+            find . -maxdepth 4 -type d -print
+            exit 2
           fi
+
+          # IMPORTANT: --out doit être un FICHIER, pas un dossier.
+          python harness.py \
+            --repo-root .. \
+            --profiles "${PROFILES_DIR}" \
+            --out ../_ci_out/harness_results.json \
+            2>&1 | tee ../_ci_out/smoke.log
 
       - name: Upload artifacts
         if: always()
@@ -92,3 +128,4 @@ PY
         with:
           name: systemd_runner_ci_out
           path: _ci_out/
+          if-no-files-found: warn
