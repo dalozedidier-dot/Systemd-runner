@@ -1,13 +1,16 @@
-name: Smoke (DDR + E)
+name: Smoke (Systemd-runner)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,74 +20,39 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install
+      - name: Install dependencies (minimal)
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pyyaml
+          # harness.py dépend de PyYAML
+          python -m pip install pyyaml
 
-      - name: Debug layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "PWD=$(pwd)"
-          ls -la
-          echo "Has harness:"
-          test -f 01_tests_multisector/harness.py && echo "OK" || (echo "Missing harness.py" && exit 1)
-          echo "Has profiles dir:"
-          test -d 00_core/examples/profiles && echo "OK" || (echo "Missing 00_core/examples/profiles" && exit 1)
-
-      - name: Run harness (write results to file)
+      - name: Run harness smoke (DDR + E)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p _ci_out
+
+          # Aide CLI en artefact (utile pour diagnostiquer si l'interface bouge)
+          python 01_tests_multisector/harness.py --help > _ci_out/harness_help.txt 2>&1 || true
+
+          # IMPORTANT:
+          # - pas de --test-matrix (non supporté)
+          # - --profiles attend un DOSSIER
+          # - --out attend un FICHIER
           python 01_tests_multisector/harness.py \
             --repo-root . \
-            --profiles 00_core/examples/profiles \
-            --out _ci_out/harness_results.json
+            --profiles 01_tests_multisector/tests/profiles \
+            --out _ci_out/harness_results.json \
+            2>&1 | tee _ci_out/smoke.log
 
-      - name: Collect reports if they exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p _ci_out
-          find . -type f \( -name "dd_report.json" -o -name "ddr_report.json" -o -name "e_report.json" \) -print \
-            -exec cp -f {} _ci_out/ \; || true
-
-      - name: Summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f _ci_out/harness_results.json ]; then
-            python - <<'PY'
-import json
-from pathlib import Path
-
-p = Path("_ci_out/harness_results.json")
-data = json.loads(p.read_text(encoding="utf-8"))
-total = len(data)
-ok = sum(1 for r in data if r.get("ok") is True)
-fail = total - ok
-
-print(f"Total: {total}")
-print(f"OK: {ok}")
-print(f"FAIL: {fail}")
-
-summary = []
-summary.append("# Smoke DDR + E")
-summary.append("")
-summary.append(f"- Total: {total}")
-summary.append(f"- OK: {ok}")
-summary.append(f"- FAIL: {fail}")
-Path("_ci_out/summary.md").write_text("\n".join(summary), encoding="utf-8")
-PY
-            cat _ci_out/summary.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No harness_results.json found" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "\nFound reports (best effort):" | tee _ci_out/found_reports.txt
+          find . -maxdepth 8 -type f \( \
+            -name "ddr_report.json" -o \
+            -name "e_report.json" -o \
+            -name "extraction_report.json" \
+          \) -print | tee -a _ci_out/found_reports.txt || true
 
       - name: Upload artifacts
         if: always()
@@ -92,3 +60,4 @@ PY
         with:
           name: systemd_runner_ci_out
           path: _ci_out/
+          if-no-files-found: warn
