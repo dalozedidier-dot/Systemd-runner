@@ -1,16 +1,13 @@
-name: ci
+name: Smoke (DDR + E)
 
 on:
-  workflow_dispatch:
   push:
     branches: [ "main" ]
-  schedule:
-    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 jobs:
-  smoke_ddr_e:
+  smoke:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,123 +17,78 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install -U pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pyyaml
 
-      - name: Run harness (aggregated)
+      - name: Debug layout
         shell: bash
-        env:
-          PYTHONPATH: .
         run: |
-          set +e
-          rm -rf _ci_out
+          set -euo pipefail
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "Has harness:"
+          test -f 01_tests_multisector/harness.py && echo "OK" || (echo "Missing harness.py" && exit 1)
+          echo "Has profiles dir:"
+          test -d 00_core/examples/profiles && echo "OK" || (echo "Missing 00_core/examples/profiles" && exit 1)
+
+      - name: Run harness (write results to file)
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p _ci_out
+          python 01_tests_multisector/harness.py \
+            --repo-root . \
+            --profiles 00_core/examples/profiles \
+            --out _ci_out/harness_results.json
 
-          HARNESS=$(find . -maxdepth 6 -type f -name "harness.py" | head -n 1)
-          if [ -z "$HARNESS" ]; then
-            echo "No harness.py found" | tee _ci_out/smoke.log
-            echo 2 > _ci_out/exit_code.txt
-            exit 0
-          fi
-
-          echo "Using HARNESS=$HARNESS" | tee _ci_out/smoke.log
-          python "$HARNESS" --help > _ci_out/harness_help.txt 2>&1
-
-          OUT_JSON="_ci_out/harness_results.json"
-          python "$HARNESS" --repo-root . --out "$OUT_JSON" 2>&1 | tee -a _ci_out/smoke.log
-          echo $? > _ci_out/exit_code.txt
-          exit 0
-
-      - name: Export classic reports (ddr_report.json + e_report.json)
-        if: always()
+      - name: Collect reports if they exist
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
+          mkdir -p _ci_out
+          find . -type f \( -name "dd_report.json" -o -name "ddr_report.json" -o -name "e_report.json" \) -print \
+            -exec cp -f {} _ci_out/ \; || true
 
-          out_dir = Path("_ci_out")
-          p = out_dir / "harness_results.json"
-          if not p.exists():
-            (out_dir / "export_error.txt").write_text("Missing harness_results.json\n", encoding="utf-8")
-            raise SystemExit(0)
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f _ci_out/harness_results.json ]; then
+            python - <<'PY'
+import json
+from pathlib import Path
 
-          data = json.loads(p.read_text(encoding="utf-8"))
-          if not isinstance(data, list) or not data:
-            (out_dir / "export_error.txt").write_text("Empty harness_results.json\n", encoding="utf-8")
-            raise SystemExit(0)
+p = Path("_ci_out/harness_results.json")
+data = json.loads(p.read_text(encoding="utf-8"))
+total = len(data)
+ok = sum(1 for r in data if r.get("ok") is True)
+fail = total - ok
 
-          first = data[0]
-          ddr = first.get("ddr", {})
-          extraction = first.get("extraction", {})
-          meta = first.get("meta", {})
+print(f"Total: {total}")
+print(f"OK: {ok}")
+print(f"FAIL: {fail}")
 
-          (out_dir / "ddr_report.json").write_text(
-            json.dumps(ddr, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-          )
-
-          e_report = {
-            "E": ddr.get("e", "INCONCLUSIF"),
-            "ko": ddr.get("ko", []),
-            "nc": ddr.get("nc", []),
-            "ok": ddr.get("ok", []),
-            "meta": {
-              "profile_id": meta.get("profile_id"),
-              "adapter_id": meta.get("adapter_id"),
-              "kernel": meta.get("kernel"),
-              "fixture": extraction.get("fixture"),
-            }
-          }
-          (out_dir / "e_report.json").write_text(
-            json.dumps(e_report, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-          )
-
-          (out_dir / "extraction_report.json").write_text(
-            json.dumps(extraction, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-          )
-
-          summary = {
-            "picked_index": 0,
-            "total_cases": len(data),
-            "picked_fixture": extraction.get("fixture"),
-            "picked_profile": meta.get("profile_id"),
-            "DDR": ddr.get("ddr"),
-            "E": ddr.get("e"),
-            "ko": ddr.get("ko", []),
-            "nc": ddr.get("nc", []),
-            "ok": ddr.get("ok", []),
-          }
-          (out_dir / "smoke_summary.json").write_text(
-            json.dumps(summary, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-          )
-          PY
+summary = []
+summary.append("# Smoke DDR + E")
+summary.append("")
+summary.append(f"- Total: {total}")
+summary.append(f"- OK: {ok}")
+summary.append(f"- FAIL: {fail}")
+Path("_ci_out/summary.md").write_text("\n".join(summary), encoding="utf-8")
+PY
+            cat _ci_out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No harness_results.json found" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: systemd_runner_artifacts
+          name: systemd_runner_ci_out
           path: _ci_out/
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Fail if harness failed
-        shell: bash
-        run: |
-          set -euo pipefail
-          code=$(cat _ci_out/exit_code.txt || echo 99)
-          echo "exit_code=$code"
-          if [ "$code" != "0" ]; then
-            exit 1
-          fi
