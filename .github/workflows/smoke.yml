@@ -34,11 +34,11 @@ jobs:
           echo "ROOT:"
           ls -la
           echo "FIND TEST_MATRIX candidates:"
-          find . -maxdepth 3 -type f -iname "*test*matrix*.md" -print || true
+          find . -maxdepth 4 -type f -iname "*test*matrix*.md" -print || true
           echo "FIND harness candidates:"
-          find . -maxdepth 4 -type f \( -iname "*harness*.py" -o -iname "*smoke*.py" \) -print || true
+          find . -maxdepth 5 -type f \( -iname "*harness*.py" -o -iname "*smoke*.py" \) -print || true
 
-      - name: Run smoke DDR + E (no hard requirement on TEST_MATRIX)
+      - name: Run smoke DDR + E
         shell: bash
         env:
           PYTHONPATH: .
@@ -47,45 +47,54 @@ jobs:
           rm -rf _ci_out
           mkdir -p _ci_out
 
-          # Cherche une matrice quelque part (si elle existe)
-          MATRIX=""
+          # Cherche un fichier "profiles" (souvent ton TEST_MATRIX.example.md)
+          PROFILES=""
           if [ -f TEST_MATRIX.md ]; then
-            MATRIX="TEST_MATRIX.md"
+            PROFILES="TEST_MATRIX.md"
           else
-            CAND=$(find . -maxdepth 3 -type f -iname "*test*matrix*.md" | head -n 1 || true)
+            CAND=$(find . -maxdepth 4 -type f -iname "*test*matrix*.md" | head -n 1 || true)
             if [ -n "$CAND" ]; then
-              MATRIX="$CAND"
+              PROFILES="$CAND"
             fi
           fi
 
-          if [ -n "$MATRIX" ]; then
-            echo "Using matrix: $MATRIX"
+          if [ -n "$PROFILES" ]; then
+            echo "Using profiles: $PROFILES"
           else
-            echo "No TEST_MATRIX found. Proceeding without it."
+            echo "No profiles file found. Proceeding without --profiles."
           fi
 
           # Lance l'entrypoint le plus probable
           if [ -f scripts/run_smoke.py ]; then
             python scripts/run_smoke.py 2>&1 | tee _ci_out/smoke.log
+
           elif [ -f 01_tests_multisector/harness.py ]; then
-            if [ -n "$MATRIX" ]; then
-              python 01_tests_multisector/harness.py --repo-root . --test-matrix "$MATRIX" 2>&1 | tee _ci_out/smoke.log
+            if [ -n "$PROFILES" ]; then
+              python 01_tests_multisector/harness.py --repo-root . --profiles "$PROFILES" --out _ci_out 2>&1 | tee _ci_out/smoke.log
             else
-              python 01_tests_multisector/harness.py --repo-root . 2>&1 | tee _ci_out/smoke.log
+              python 01_tests_multisector/harness.py --repo-root . --out _ci_out 2>&1 | tee _ci_out/smoke.log
             fi
+
           elif [ -f harness.py ]; then
-            if [ -n "$MATRIX" ]; then
-              python harness.py --repo-root . --test-matrix "$MATRIX" 2>&1 | tee _ci_out/smoke.log
+            if [ -n "$PROFILES" ]; then
+              python harness.py --repo-root . --profiles "$PROFILES" --out _ci_out 2>&1 | tee _ci_out/smoke.log
             else
-              python harness.py --repo-root . 2>&1 | tee _ci_out/smoke.log
+              python harness.py --repo-root . --out _ci_out 2>&1 | tee _ci_out/smoke.log
             fi
+
           else
             echo "No smoke/harness entrypoint found." | tee _ci_out/smoke.log
             exit 2
           fi
 
           echo "Found reports:"
-          find . -maxdepth 6 -type f \( -name "ddr_report.json" -o -name "e_report.json" -o -name "extraction_report.json" \) -print | tee _ci_out/found_reports.txt || true
+          find _ci_out -maxdepth 6 -type f \( -name "ddr_report.json" -o -name "e_report.json" -o -name "extraction_report.json" \) -print | tee _ci_out/found_reports.txt || true
+
+          # Sécurité : on veut au moins DDR + E
+          if [ ! -f _ci_out/ddr_report.json ] || [ ! -f _ci_out/e_report.json ]; then
+            echo "Missing required outputs in _ci_out (need ddr_report.json and e_report.json)"
+            exit 2
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -93,7 +102,4 @@ jobs:
           name: systemd_smoke_reports
           path: |
             _ci_out/
-            **/ddr_report.json
-            **/e_report.json
-            **/extraction_report.json
           if-no-files-found: error
